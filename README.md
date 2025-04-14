@@ -1,2 +1,196 @@
-# hackethron
-College Event 
+# MiniFun: A Minimal Interpreted Functional Language
+
+# ------------------------
+# Tokenizer (Lexer)
+# ------------------------
+import re
+
+TOKEN_REGEX = [
+    ("NUMBER",   r"\\d+"),
+    ("ID",       r"[a-zA-Z_][a-zA-Z0-9_]*"),
+    ("OP",       r"[+\-*/=!<>]=?|&&|\\|\\|"),
+    ("LPAREN",   r"\\("),
+    ("RPAREN",   r"\\)"),
+    ("LBRACE",   r"\\{"),
+    ("RBRACE",   r"\\}"),
+    ("SEMICOLON",r";"),
+    ("COMMA",    r","),
+    ("WHITESPACE",r"[ \\t\\n]+", True),
+]
+
+def tokenize(code):
+    tokens = []
+    pos = 0
+    while pos < len(code):
+        match = None
+        for tok_type, regex, *skip in TOKEN_REGEX:
+            pattern = re.compile(regex)
+            match = pattern.match(code, pos)
+            if match:
+                if not skip:
+                    tokens.append((tok_type, match.group()))
+                pos = match.end()
+                break
+        if not match:
+            raise SyntaxError(f"Unexpected character: {code[pos]}")
+    return tokens
+
+# ------------------------
+# AST Nodes
+# ------------------------
+class Expr: pass
+
+class BinaryExpr(Expr):
+    def __init__(self, left, op, right): self.left, self.op, self.right = left, op, right
+class Literal(Expr):
+    def __init__(self, value): self.value = int(value) if value.isdigit() else value
+class Variable(Expr):
+    def __init__(self, name): self.name = name
+class Assign: 
+    def __init__(self, name, expr): self.name, self.expr = name, expr
+class IfStatement:
+    def __init__(self, cond, then_block, else_block=None):
+        self.cond, self.then_block, self.else_block = cond, then_block, else_block
+class Block:
+    def __init__(self, stmts): self.stmts = stmts
+
+# ------------------------
+# Parser (recursive descent)
+# ------------------------
+class Parser:
+    def __init__(self, tokens):
+        self.tokens = tokens
+        self.current = 0
+
+    def match(self, *types):
+        if self.current < len(self.tokens) and self.tokens[self.current][0] in types:
+            self.current += 1
+            return self.tokens[self.current - 1][1]
+        return None
+
+    def peek(self):
+        return self.tokens[self.current] if self.current < len(self.tokens) else (None, None)
+
+    def parse(self):
+        stmts = []
+        while self.current < len(self.tokens):
+            stmts.append(self.statement())
+        return Block(stmts)
+
+    def statement(self):
+        if self.match("ID") == "let":
+            name = self.match("ID")
+            self.match("OP")  # expect '='
+            expr = self.expression()
+            self.match("SEMICOLON")
+            return Assign(name, expr)
+        elif self.match("ID") == "if":
+            cond = self.expression()
+            self.match("LBRACE")
+            then_block = self.block()
+            else_block = None
+            if self.match("ID") == "else":
+                self.match("LBRACE")
+                else_block = self.block()
+            return IfStatement(cond, then_block, else_block)
+        else:
+            expr = self.expression()
+            self.match("SEMICOLON")
+            return expr
+
+    def block(self):
+        stmts = []
+        while self.peek()[0] != "RBRACE":
+            stmts.append(self.statement())
+        self.match("RBRACE")
+        return Block(stmts)
+
+    def expression(self):
+        return self.term()
+
+    def term(self):
+        expr = self.factor()
+        while self.peek()[1] in ('+', '-'):
+            op = self.match("OP")
+            right = self.factor()
+            expr = BinaryExpr(expr, op, right)
+        return expr
+
+    def factor(self):
+        expr = self.primary()
+        while self.peek()[1] in ('*', '/'):
+            op = self.match("OP")
+            right = self.primary()
+            expr = BinaryExpr(expr, op, right)
+        return expr
+
+    def primary(self):
+        tok_type, value = self.peek()
+        if tok_type == "NUMBER":
+            self.match("NUMBER")
+            return Literal(value)
+        elif tok_type == "ID":
+            self.match("ID")
+            return Variable(value)
+        elif tok_type == "LPAREN":
+            self.match("LPAREN")
+            expr = self.expression()
+            self.match("RPAREN")
+            return expr
+        raise SyntaxError(f"Unexpected token: {value}")
+
+# ------------------------
+# Interpreter
+# ------------------------
+class Environment:
+    def __init__(self):
+        self.vars = {}
+
+    def get(self, name):
+        if name in self.vars:
+            return self.vars[name]
+        raise NameError(f"Undefined variable '{name}'")
+
+    def set(self, name, value):
+        self.vars[name] = value
+
+class Interpreter:
+    def __init__(self):
+        self.env = Environment()
+
+    def eval(self, node):
+        if isinstance(node, Block):
+            for stmt in node.stmts:
+                val = self.eval(stmt)
+            return val
+        elif isinstance(node, Assign):
+            val = self.eval(node.expr)
+            self.env.set(node.name, val)
+            return val
+        elif isinstance(node, Literal):
+            return node.value
+        elif isinstance(node, Variable):
+            return self.env.get(node.name)
+        elif isinstance(node, BinaryExpr):
+            left = self.eval(node.left)
+            right = self.eval(node.right)
+            return self.apply_op(node.op, left, right)
+        elif isinstance(node, IfStatement):
+            cond = self.eval(node.cond)
+            if cond:
+                return self.eval(node.then_block)
+            elif node.else_block:
+                return self.eval(node.else_block)
+
+    def apply_op(self, op, left, right):
+        if op == '+': return left + right
+        elif op == '-': return left - right
+        elif op == '*': return left * right
+        elif op == '/': return left // right
+        elif op == '==': return left == right
+        elif op == '!=': return left != right
+        elif op == '>': return left > right
+        elif op == '<': return left < right
+        elif op == '>=': return left >= right
+        elif op == '<=': return left <= right
+        else: raise ValueError(f"Unknown operator {op}")
